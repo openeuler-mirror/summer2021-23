@@ -1,0 +1,295 @@
+From 392b0efa1d5e2d131e0d951fcd050e11ebc664c2 Mon Sep 17 00:00:00 2001
+From: WangShichang <wangsc217@qq.com>
+Date: Wed, 21 Jul 2021 10:47:30 +0800
+Subject: [PATCH] riscv: Convert custom spinlock/rwlock to generic
+ qspinlock/qrwlock
+
+---
+ arch/riscv/Kconfig                      |   3 +
+ arch/riscv/include/asm/Kbuild           |   3 +
+ arch/riscv/include/asm/spinlock.h       | 126 +-----------------------
+ arch/riscv/include/asm/spinlock_types.h |  14 +--
+ kernel/Kconfig.locks                    |   4 +
+ kernel/locking/qspinlock.c              |  46 +++++----
+ 6 files changed, 41 insertions(+), 155 deletions(-)
+
+diff --git a/arch/riscv/Kconfig b/arch/riscv/Kconfig
+index d062cf79f999..3d1502809157 100644
+--- a/arch/riscv/Kconfig
++++ b/arch/riscv/Kconfig
+@@ -32,6 +32,9 @@ config RISCV
+ 	select ARCH_WANT_DEFAULT_TOPDOWN_MMAP_LAYOUT if MMU
+ 	select ARCH_WANT_FRAME_POINTERS
+ 	select ARCH_WANT_HUGE_PMD_SHARE if 64BIT
++	select ARCH_USE_QUEUED_RWLOCKS
++	select ARCH_USE_QUEUED_SPINLOCKS
++	select ARCH_USE_QUEUED_SPINLOCKS_XCHG32
+ 	select CLONE_BACKWARDS
+ 	select CLINT_TIMER if !MMU
+ 	select COMMON_CLK
+diff --git a/arch/riscv/include/asm/Kbuild b/arch/riscv/include/asm/Kbuild
+index 445ccc97305a..750c1056b90f 100644
+--- a/arch/riscv/include/asm/Kbuild
++++ b/arch/riscv/include/asm/Kbuild
+@@ -3,5 +3,8 @@ generic-y += early_ioremap.h
+ generic-y += extable.h
+ generic-y += flat.h
+ generic-y += kvm_para.h
++generic-y += mcs_spinlock.h
++generic-y += qrwlock.h
++generic-y += qspinlock.h
+ generic-y += user.h
+ generic-y += vmlinux.lds.h
+diff --git a/arch/riscv/include/asm/spinlock.h b/arch/riscv/include/asm/spinlock.h
+index f4f7fa1b7ca8..a557de67a425 100644
+--- a/arch/riscv/include/asm/spinlock.h
++++ b/arch/riscv/include/asm/spinlock.h
+@@ -7,129 +7,7 @@
+ #ifndef _ASM_RISCV_SPINLOCK_H
+ #define _ASM_RISCV_SPINLOCK_H
+ 
+-#include <linux/kernel.h>
+-#include <asm/current.h>
+-#include <asm/fence.h>
+-
+-/*
+- * Simple spin lock operations.  These provide no fairness guarantees.
+- */
+-
+-/* FIXME: Replace this with a ticket lock, like MIPS. */
+-
+-#define arch_spin_is_locked(x)	(READ_ONCE((x)->lock) != 0)
+-
+-static inline void arch_spin_unlock(arch_spinlock_t *lock)
+-{
+-	smp_store_release(&lock->lock, 0);
+-}
+-
+-static inline int arch_spin_trylock(arch_spinlock_t *lock)
+-{
+-	int tmp = 1, busy;
+-
+-	__asm__ __volatile__ (
+-		"	amoswap.w %0, %2, %1\n"
+-		RISCV_ACQUIRE_BARRIER
+-		: "=r" (busy), "+A" (lock->lock)
+-		: "r" (tmp)
+-		: "memory");
+-
+-	return !busy;
+-}
+-
+-static inline void arch_spin_lock(arch_spinlock_t *lock)
+-{
+-	while (1) {
+-		if (arch_spin_is_locked(lock))
+-			continue;
+-
+-		if (arch_spin_trylock(lock))
+-			break;
+-	}
+-}
+-
+-/***********************************************************/
+-
+-static inline void arch_read_lock(arch_rwlock_t *lock)
+-{
+-	int tmp;
+-
+-	__asm__ __volatile__(
+-		"1:	lr.w	%1, %0\n"
+-		"	bltz	%1, 1b\n"
+-		"	addi	%1, %1, 1\n"
+-		"	sc.w	%1, %1, %0\n"
+-		"	bnez	%1, 1b\n"
+-		RISCV_ACQUIRE_BARRIER
+-		: "+A" (lock->lock), "=&r" (tmp)
+-		:: "memory");
+-}
+-
+-static inline void arch_write_lock(arch_rwlock_t *lock)
+-{
+-	int tmp;
+-
+-	__asm__ __volatile__(
+-		"1:	lr.w	%1, %0\n"
+-		"	bnez	%1, 1b\n"
+-		"	li	%1, -1\n"
+-		"	sc.w	%1, %1, %0\n"
+-		"	bnez	%1, 1b\n"
+-		RISCV_ACQUIRE_BARRIER
+-		: "+A" (lock->lock), "=&r" (tmp)
+-		:: "memory");
+-}
+-
+-static inline int arch_read_trylock(arch_rwlock_t *lock)
+-{
+-	int busy;
+-
+-	__asm__ __volatile__(
+-		"1:	lr.w	%1, %0\n"
+-		"	bltz	%1, 1f\n"
+-		"	addi	%1, %1, 1\n"
+-		"	sc.w	%1, %1, %0\n"
+-		"	bnez	%1, 1b\n"
+-		RISCV_ACQUIRE_BARRIER
+-		"1:\n"
+-		: "+A" (lock->lock), "=&r" (busy)
+-		:: "memory");
+-
+-	return !busy;
+-}
+-
+-static inline int arch_write_trylock(arch_rwlock_t *lock)
+-{
+-	int busy;
+-
+-	__asm__ __volatile__(
+-		"1:	lr.w	%1, %0\n"
+-		"	bnez	%1, 1f\n"
+-		"	li	%1, -1\n"
+-		"	sc.w	%1, %1, %0\n"
+-		"	bnez	%1, 1b\n"
+-		RISCV_ACQUIRE_BARRIER
+-		"1:\n"
+-		: "+A" (lock->lock), "=&r" (busy)
+-		:: "memory");
+-
+-	return !busy;
+-}
+-
+-static inline void arch_read_unlock(arch_rwlock_t *lock)
+-{
+-	__asm__ __volatile__(
+-		RISCV_RELEASE_BARRIER
+-		"	amoadd.w x0, %1, %0\n"
+-		: "+A" (lock->lock)
+-		: "r" (-1)
+-		: "memory");
+-}
+-
+-static inline void arch_write_unlock(arch_rwlock_t *lock)
+-{
+-	smp_store_release(&lock->lock, 0);
+-}
++#include <asm/qspinlock.h>
++#include <asm/qrwlock.h>
+ 
+ #endif /* _ASM_RISCV_SPINLOCK_H */
+diff --git a/arch/riscv/include/asm/spinlock_types.h b/arch/riscv/include/asm/spinlock_types.h
+index f398e7638dd6..75f86acebd17 100644
+--- a/arch/riscv/include/asm/spinlock_types.h
++++ b/arch/riscv/include/asm/spinlock_types.h
+@@ -6,20 +6,12 @@
+ #ifndef _ASM_RISCV_SPINLOCK_TYPES_H
+ #define _ASM_RISCV_SPINLOCK_TYPES_H
+ 
+-#ifndef __LINUX_SPINLOCK_TYPES_H
++#if !defined(__LINUX_SPINLOCK_TYPES_H) && !defined(_ASM_RISCV_SPINLOCK_H)
+ # error "please don't include this file directly"
+ #endif
+ 
+-typedef struct {
+-	volatile unsigned int lock;
+-} arch_spinlock_t;
+ 
+-#define __ARCH_SPIN_LOCK_UNLOCKED	{ 0 }
+-
+-typedef struct {
+-	volatile unsigned int lock;
+-} arch_rwlock_t;
+-
+-#define __ARCH_RW_LOCK_UNLOCKED		{ 0 }
++#include <asm-generic/qspinlock_types.h>
++#include <asm-generic/qrwlock_types.h>
+ 
+ #endif /* _ASM_RISCV_SPINLOCK_TYPES_H */
+diff --git a/kernel/Kconfig.locks b/kernel/Kconfig.locks
+index 3de8fd11873b..31be2a3c3e41 100644
+--- a/kernel/Kconfig.locks
++++ b/kernel/Kconfig.locks
+@@ -239,6 +239,10 @@ config LOCK_SPIN_ON_OWNER
+ config ARCH_USE_QUEUED_SPINLOCKS
+ 	bool
+ 
++config ARCH_USE_QUEUED_SPINLOCKS_XCHG32
++	bool
++	
++
+ config QUEUED_SPINLOCKS
+ 	def_bool y if ARCH_USE_QUEUED_SPINLOCKS
+ 	depends on SMP
+diff --git a/kernel/locking/qspinlock.c b/kernel/locking/qspinlock.c
+index 8c1a21b53913..6d62e5906bbd 100644
+--- a/kernel/locking/qspinlock.c
++++ b/kernel/locking/qspinlock.c
+@@ -166,25 +166,6 @@ static __always_inline void clear_pending_set_locked(struct qspinlock *lock)
+ 	WRITE_ONCE(lock->locked_pending, _Q_LOCKED_VAL);
+ }
+ 
+-/*
+- * xchg_tail - Put in the new queue tail code word & retrieve previous one
+- * @lock : Pointer to queued spinlock structure
+- * @tail : The new queue tail code word
+- * Return: The previous queue tail code word
+- *
+- * xchg(lock, tail), which heads an address dependency
+- *
+- * p,*,* -> n,*,* ; prev = xchg(lock, node)
+- */
+-static __always_inline u32 xchg_tail(struct qspinlock *lock, u32 tail)
+-{
+-	/*
+-	 * We can use relaxed semantics since the caller ensures that the
+-	 * MCS node is properly initialized before updating the tail.
+-	 */
+-	return (u32)xchg_relaxed(&lock->tail,
+-				 tail >> _Q_TAIL_OFFSET) << _Q_TAIL_OFFSET;
+-}
+ 
+ #else /* _Q_PENDING_BITS == 8 */
+ 
+@@ -209,6 +190,31 @@ static __always_inline void clear_pending_set_locked(struct qspinlock *lock)
+ {
+ 	atomic_add(-_Q_PENDING_VAL + _Q_LOCKED_VAL, &lock->val);
+ }
++#endif /* _Q_PENDING_BITS == 8*/
++
++#if _Q_PENDING_BITS == 8 && !defined(CONFIG_ARCH_USE_QUEUED_SPINLOCKS_XCHG32)
++/*
++ * xchg_tail - Put in the new queue tail code word & retrieve previous one
++ * @lock : Pointer to queued spinlock structure
++ * @tail : The new queue tail code word
++ * Return: The previous queue tail code word
++ *
++ * xchg(lock, tail), which heads an address dependency
++ *
++ * p,*,* -> n,*,* ; prev = xchg(lock, node)
++ */
++static __always_inline u32 xchg_tail(struct qspinlock *lock, u32 tail)
++{
++	/*
++	 * We can use relaxed semantics since the caller ensures that the
++	 * MCS node is properly initialized before updating the tail.
++	 */
++	return (u32)xchg_relaxed(&lock->tail,
++				 tail >> _Q_TAIL_OFFSET) << _Q_TAIL_OFFSET;
++}
++
++#else
++
+ 
+ /**
+  * xchg_tail - Put in the new queue tail code word & retrieve previous one
+@@ -239,7 +245,7 @@ static __always_inline u32 xchg_tail(struct qspinlock *lock, u32 tail)
+ 	}
+ 	return old;
+ }
+-#endif /* _Q_PENDING_BITS == 8 */
++#endif
+ 
+ /**
+  * queued_fetch_set_pending_acquire - fetch the whole lock value and set pending
+-- 
+2.25.1
+
