@@ -4,19 +4,33 @@
 https://gitee.com/openeuler-competition/summer-2021/issues/I3EAV7
 
 #### Software Architecture
-Software architecture description
+This repository bases on the `OLK-5.10` branch of openeuler kernel. Applying the patch to the original version can make it support `qspinlock` in arch RISCV.
 
 #### Installation
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+1.  Install git   
+```
+sudo apt update
+sudo apt install git
+```
+2.  Clone openeuler kernel   
+```
+git clone https://gitee.com/openeuler/kernel.git
+```
+3.  Clone this repository   
+```
+https://gitee.com/openeuler-competition/summer2021-23.git
+```
+4.  Enter the kernel repository and switch to `OLK-5.10` branch
+```
+cd kernel
+git checkout remotes/origin/OLK-5.10
+```
+5.  Apply the patch for the kernel   
+```
+git apply ../summer2021-23/0001-riscv-Convert-custom-spinlock-rwlock-to-generic-qspi.patch --reject
+```
 
-#### Instructions
-
-1.  xxxx
-2.  xxxx
-3.  xxxx
 
 #### Contribution
 
@@ -26,11 +40,3 @@ Software architecture description
 4.  Create Pull Request
 
 
-#### Gitee Feature
-
-1.  You can use Readme\_XXX.md to support different languages, such as Readme\_en.md, Readme\_zh.md
-2.  Gitee blog [blog.gitee.com](https://blog.gitee.com)
-3.  Explore open source project [https://gitee.com/explore](https://gitee.com/explore)
-4.  The most valuable open source project [GVP](https://gitee.com/gvp)
-5.  The manual of Gitee [https://gitee.com/help](https://gitee.com/help)
-6.  The most popular members  [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
